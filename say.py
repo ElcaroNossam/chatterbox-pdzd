@@ -47,8 +47,8 @@ if a.lang == "ru":
     from chatterbox.text_ru import normalize_ru
     text = normalize_ru(text)
 parts = re.split(r"(?<=[.!?…])\s+", re.sub(r"\s+", " ", text).strip())
-# short chunks are much more stable: split long sentences at commas (~140 chars max)
-MAX_CHARS = 140
+# short chunks are much more stable: split long sentences at commas (~100 chars max)
+MAX_CHARS = 100
 chunks = []
 for p in parts:
     while len(p) > MAX_CHARS:
@@ -62,10 +62,10 @@ SPEECH_TOKENS_PER_SEC = 25  # S3 speech tokenizer rate
 
 
 def token_budget(chunk: str) -> int:
-    """Cap generation length: at most ~1.5 s per 2 syllables (half the normal speaking rate),
+    """Cap generation length: at most ~1 s per 3.2 syllables (about half the normal 5-6 syllables/s),
     so the model can't run on and invent extra speech after the text ends."""
     syllables = max(3, sum(ch.lower() in VOWELS for ch in chunk))
-    return int(SPEECH_TOKENS_PER_SEC * (1.0 + syllables / 1.5))
+    return int(SPEECH_TOKENS_PER_SEC * (1.0 + syllables / 3.2))
 print(f"{len(chunks)} фраз", flush=True)
 
 pieces, gap = [], torch.zeros(1, int(model.sr * a.pause))
