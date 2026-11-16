@@ -3,7 +3,8 @@
 Turns raw text into something the model can pronounce:
 - strips our lyric-sheet markup: [Section] headers, (stage directions), | breath marks, leading line numbers
 - expands abbreviations (т.е., т.к., и т.д., км, руб. ...)
-- spells out numbers: plain cardinals, ordinals like 5-й / 5-я / 5-е / 5-го, percents, years
+- spells out numbers: plain cardinals, ordinals like 5-й / 5-я / 5-е / 5-го, percents,
+  years with case agreement (в 2026 г. -> в две тысячи двадцать шестом году)
 - keeps manual stress marks written as "+" before a vowel (м+ука), they are handled later by the stresser
 """
 import re
@@ -102,6 +103,54 @@ def _ordinal(n: int, suffix: str) -> str:
     return stem + endings.get(suffix, base[len(stem):])
 
 
+# ---- years: the ordinal and the word "год" must agree with the preposition ----
+PREP_CASE = {
+    "в": "prep", "во": "prep", "о": "prep", "об": "prep", "при": "prep",
+    "с": "gen", "со": "gen", "до": "gen", "от": "gen", "после": "gen", "около": "gen",
+    "для": "gen", "без": "gen", "из": "gen", "середины": "gen", "начала": "gen", "конца": "gen",
+    "к": "dat", "ко": "dat",
+}
+YEAR_WORD = {"nom": "год", "gen": "года", "prep": "году", "dat": "году"}
+WORD_CASE = {"год": "nom", "года": "gen", "году": "prep"}
+
+
+def _decline_ordinal(phrase: str, case: str) -> str:
+    """Decline the last word of a masculine ordinal phrase: шестой -> шестого/шестом/шестому."""
+    if case == "nom":
+        return phrase
+    head, _, last = phrase.rpartition(" ")
+    if last == "третий":  # irregular: третьего / третьем / третьему
+        last = {"gen": "третьего", "prep": "третьем", "dat": "третьему"}[case]
+        return f"{head} {last}".strip()
+    endings = {
+        "gen": {"ой": "ого", "ый": "ого", "ий": "его"},
+        "prep": {"ой": "ом", "ый": "ом", "ий": "ем"},
+        "dat": {"ой": "ому", "ый": "ому", "ий": "ему"},
+    }[case]
+    for nom, ending in endings.items():
+        if last.endswith(nom):
+            last = last[: -len(nom)] + ending
+            break
+    return f"{head} {last}".strip()
+
+
+YEAR_RE = re.compile(
+    r"(?<![\w])(?:(?P<prep>[Вв]о?|[Оо]б?|[Пп]ри|[Сс]о?|[Дд]о|[Оо]т|[Пп]осле|[Оо]коло|[Дд]ля|[Бб]ез|[Ии]з|[Кк]о?|"
+    r"середины|начала|конца)\s+)?(?P<num>\d{3,4})\s*(?P<word>г\.|году|года|год)(?![\w])"
+)
+
+
+def _year(m: "re.Match") -> str:
+    prep, num, word = m.group("prep"), int(m.group("num")), m.group("word")
+    case = PREP_CASE.get(prep.lower(), "nom") if prep else "nom"
+    if word in WORD_CASE and not prep:
+        case = WORD_CASE[word]
+    if word == "году" and case == "gen":  # "с ... году" is not used; trust the written word
+        case = "prep"
+    ordinal = _decline_ordinal(_ordinal(num, "й"), case)
+    return f"{prep + ' ' if prep else ''}{ordinal} {YEAR_WORD[case]}"
+
+
 def strip_markup(text: str) -> str:
     lines = []
     for line in text.splitlines():
@@ -119,8 +168,8 @@ def normalize_ru(text: str) -> str:
     text = strip_markup(text)
     for pattern, repl in ABBREVIATIONS:
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
-    # years: "2026 г." / "в 2026 году" -> ordinal + год
-    text = re.sub(r"(\d{3,4})\s?г\.", lambda m: _ordinal(int(m.group(1)), "й") + " год", text)
+    # years with case agreement: "в 2026 г." -> "в две тысячи двадцать шестом году"
+    text = YEAR_RE.sub(_year, text)
     text = re.sub(r"\bг\.", "год", text)
     # number + unit with agreement
     for unit_re, forms in UNITS.items():

@@ -57,6 +57,31 @@ for p in parts:
     if p:
         chunks.append(p)
 
+
+def trim_speech(wav: torch.Tensor, sr: int, rel_db: float = 30.0, margin_s: float = 0.06, fade_s: float = 0.015) -> torch.Tensor:
+    """Cut generated breath/hiss tails and leading silence: keep only the region within rel_db of the
+    phrase loudness (+ small margin), with short fades so the joins don't click."""
+    x = wav[0]
+    win = int(0.02 * sr)
+    if x.numel() < win * 3:
+        return wav
+    frames = x[: x.numel() // win * win].view(-1, win)
+    rms_db = 20 * torch.log10(frames.pow(2).mean(dim=1).sqrt() + 1e-9)
+    level = 20 * torch.log10(x.pow(2).mean().sqrt() + 1e-9)
+    speech = torch.nonzero(rms_db > level - rel_db).flatten()
+    if speech.numel() == 0:
+        return wav
+    margin = int(margin_s * sr)
+    start = max(0, int(speech[0]) * win - margin)
+    end = min(x.numel(), (int(speech[-1]) + 1) * win + margin)
+    y = x[start:end].clone()
+    fade = min(int(fade_s * sr), y.numel() // 4)
+    if fade > 0:
+        ramp = torch.linspace(0, 1, fade)
+        y[:fade] *= ramp
+        y[-fade:] *= ramp.flip(0)
+    return y.unsqueeze(0)
+
 VOWELS = set("аеёиоуыэюяaeiouy")
 SPEECH_TOKENS_PER_SEC = 25  # S3 speech tokenizer rate
 
@@ -73,7 +98,8 @@ for i, c in enumerate(chunks, 1):
     t = time.time()
     wav = model.generate(c, language_id=a.lang, exaggeration=a.emotion, cfg_weight=a.pace,
                          n_cfm_timesteps=a.steps, max_new_tokens=token_budget(c))
-    pieces += [wav.cpu(), gap]
+    wav = trim_speech(wav.cpu(), model.sr)  # pdzd: no hiss tails / gaps between phrases
+    pieces += [wav, gap]
     print(f"[{i}/{len(chunks)}] {time.time()-t:.0f}s for {wav.shape[1]/model.sr:.1f}s  {c[:60]}", flush=True)
 
 out = torch.cat(pieces[:-1], dim=1)
