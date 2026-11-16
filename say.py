@@ -47,20 +47,32 @@ if a.lang == "ru":
     from chatterbox.text_ru import normalize_ru
     text = normalize_ru(text)
 parts = re.split(r"(?<=[.!?…])\s+", re.sub(r"\s+", " ", text).strip())
+# short chunks are much more stable: split long sentences at commas (~140 chars max)
+MAX_CHARS = 140
 chunks = []
 for p in parts:
-    while len(p) > 250:
-        cut = p.rfind(",", 0, 250); cut = cut if cut > 50 else 250
+    while len(p) > MAX_CHARS:
+        cut = p.rfind(",", 0, MAX_CHARS); cut = cut if cut > 40 else p.rfind(" ", 0, MAX_CHARS)
         chunks.append(p[:cut + 1].strip()); p = p[cut + 1:].strip()
     if p:
         chunks.append(p)
+
+VOWELS = set("аеёиоуыэюяaeiouy")
+SPEECH_TOKENS_PER_SEC = 25  # S3 speech tokenizer rate
+
+
+def token_budget(chunk: str) -> int:
+    """Cap generation length: at most ~1.5 s per 2 syllables (half the normal speaking rate),
+    so the model can't run on and invent extra speech after the text ends."""
+    syllables = max(3, sum(ch.lower() in VOWELS for ch in chunk))
+    return int(SPEECH_TOKENS_PER_SEC * (1.0 + syllables / 1.5))
 print(f"{len(chunks)} фраз", flush=True)
 
 pieces, gap = [], torch.zeros(1, int(model.sr * a.pause))
 for i, c in enumerate(chunks, 1):
     t = time.time()
     wav = model.generate(c, language_id=a.lang, exaggeration=a.emotion, cfg_weight=a.pace,
-                         n_cfm_timesteps=a.steps)
+                         n_cfm_timesteps=a.steps, max_new_tokens=token_budget(c))
     pieces += [wav.cpu(), gap]
     print(f"[{i}/{len(chunks)}] {time.time()-t:.0f}s for {wav.shape[1]/model.sr:.1f}s  {c[:60]}", flush=True)
 
