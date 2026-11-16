@@ -218,7 +218,7 @@ class ChatterboxMultilingualTTS:
             )
         )
         return cls.from_local(ckpt_dir, device)
-    
+
     def prepare_conditionals(self, wav_fpath, exaggeration=0.5):
         ## Load reference wav
         s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
@@ -257,7 +257,10 @@ class ChatterboxMultilingualTTS:
         repetition_penalty=2.0,
         min_p=0.05,
         top_p=1.0,
+        max_new_tokens=1000,
+        n_cfm_timesteps=None,
     ):
+        # pdzd-fix: max_new_tokens / n_cfm_timesteps exposed (were hardcoded; fewer CFM steps = faster on CPU)
         # Validate language_id
         if language_id and language_id.lower() not in SUPPORTED_LANGUAGES:
             supported_langs = ", ".join(SUPPORTED_LANGUAGES.keys())
@@ -265,9 +268,15 @@ class ChatterboxMultilingualTTS:
                 f"Unsupported language_id '{language_id}'. "
                 f"Supported languages: {supported_langs}"
             )
-        
+
         if audio_prompt_path:
-            self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
+            # pdzd-fix: the original rebuilt the voice profile (3 encoders) on every call;
+            # only rebuild when the reference file actually changes.
+            import os
+            src = (os.path.abspath(audio_prompt_path), os.path.getmtime(audio_prompt_path))
+            if getattr(self, "_pdzd_cond_src", None) != src or self.conds is None:
+                self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
+                self._pdzd_cond_src = src
         else:
             assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
 
@@ -281,6 +290,9 @@ class ChatterboxMultilingualTTS:
             ).to(device=self.device)
 
         # Norm and tokenize text
+        if language_id and language_id.lower() == "ru":  # pdzd-fix: numbers, abbreviations, lyric markup
+            from .text_ru import normalize_ru
+            text = normalize_ru(text)
         text = punc_norm(text)
         text_tokens = self.tokenizer.text_to_tokens(text, language_id=language_id.lower() if language_id else None).to(self.device)
         text_tokens = torch.cat([text_tokens, text_tokens], dim=0)  # Need two seqs for CFG
@@ -294,7 +306,7 @@ class ChatterboxMultilingualTTS:
             speech_tokens = self.t3.inference(
                 t3_cond=self.conds.t3,
                 text_tokens=text_tokens,
-                max_new_tokens=1000,  # TODO: use the value in config
+                max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
                 repetition_penalty=repetition_penalty,
@@ -311,6 +323,7 @@ class ChatterboxMultilingualTTS:
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
                 ref_dict=self.conds.gen,
+                n_cfm_timesteps=n_cfm_timesteps,
             )
             wav = wav.squeeze(0).detach().cpu().numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)

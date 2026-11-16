@@ -155,15 +155,18 @@ class AlignmentStreamAnalyzer:
                 self.generated_tokens = self.generated_tokens[-8:]
             
         # Check for excessive token repetition (3x same token in a row)
+        # pdzd-fix: original checked only the last 2 tokens with the completion guard
+        # commented out, cutting phrases mid-word. Now: after the text is complete, 3 identical
+        # tokens in a row end generation; before that, only a real stuck loop (8 identical) does.
         token_repetition = (
-            # self.complete and 
-            len(self.generated_tokens) >= 3 and
-            len(set(self.generated_tokens[-2:])) == 1
+            (self.complete and len(self.generated_tokens) >= 3
+             and len(set(self.generated_tokens[-3:])) == 1)
+            or (len(self.generated_tokens) >= 8 and len(set(self.generated_tokens[-8:])) == 1)
         )
         
         if token_repetition:
             repeated_token = self.generated_tokens[-1]
-            logger.warning(f"🚨 Detected 2x repetition of token {repeated_token}")
+            logger.warning(f"🚨 Detected repetition of token {repeated_token}")
             
         # Suppress EoS to prevent early termination
         if cur_text_posn < S - 3 and S > 5:  # Only suppress if text is longer than 5 tokens

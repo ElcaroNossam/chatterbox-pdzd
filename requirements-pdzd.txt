@@ -1,0 +1,4 @@
+# extra deps for chatterbox-pdzd on top of chatterbox-tts 0.1.7 deps
+setuptools<81        # perth watermarker imports pkg_resources
+ruaccent             # Russian stress (Apache-2.0), replaces GPL russian_text_stresser
+num2words            # numbers -> words for text_ru.normalize_ru
