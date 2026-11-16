@@ -1,0 +1,13 @@
+[project]
+name = "chatterbox-pdzd"
+version = "0.1.7+pdzd.1"
+description = "Fork of Resemble AI Chatterbox 0.1.7 (MIT) with fixes for Russian TTS"
+requires-python = ">=3.10"
+dependencies = []
+[build-system]
+requires = ["setuptools>=61,<81"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+where = ["src"]
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.txt", "*.yaml"]
