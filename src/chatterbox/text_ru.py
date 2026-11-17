@@ -167,6 +167,31 @@ def _numbered_sheet(lines) -> bool:
     return False
 
 
+
+# Latin script: the model can't read it. Known names -> Russian spelling, ALL-CAPS acronyms -> letter names
+LATIN_WORDS = {
+    "chatgpt": "чат джи пи ти", "gpt": "джи пи ти", "openai": "опен эй ай", "claude": "клод",
+    "anthropic": "антропик", "google": "гугл", "youtube": "ютуб", "tiktok": "тикток",
+    "telegram": "телеграм", "instagram": "инстаграм", "whatsapp": "вотсап", "iphone": "айфон",
+    "android": "андроид", "windows": "виндоус", "wifi": "вай фай", "wi-fi": "вай фай", "ok": "окей",
+    "okay": "окей", "dj": "диджей", "mc": "эм си", "rap": "рэп", "beat": "бит", "flow": "флоу",
+}
+LETTER_NAMES = {
+    "a": "эй", "b": "би", "c": "си", "d": "ди", "e": "и", "f": "эф", "g": "джи", "h": "эйч", "i": "ай",
+    "j": "джей", "k": "кей", "l": "эл", "m": "эм", "n": "эн", "o": "оу", "p": "пи", "q": "кью", "r": "ар",
+    "s": "эс", "t": "ти", "u": "ю", "v": "ви", "w": "дабл ю", "x": "экс", "y": "уай", "z": "зед",
+}
+
+
+def _latin(m: "re.Match") -> str:
+    w = m.group(0)
+    if w.lower() in LATIN_WORDS:
+        return LATIN_WORDS[w.lower()]
+    if w.isupper() and len(w) <= 5:
+        return " ".join(LETTER_NAMES[c] for c in w.lower())
+    return w
+
+
 def strip_markup(text: str) -> str:
     raw = text.splitlines()
     numbered = _numbered_sheet(raw)
@@ -185,11 +210,24 @@ def strip_markup(text: str) -> str:
 
 def normalize_ru(text: str) -> str:
     text = strip_markup(text)
+    text = re.sub(r"[A-Za-z][A-Za-z\-]*[A-Za-z]|[A-Za-z]", _latin, text)
     for pattern, repl in ABBREVIATIONS:
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
     # years with case agreement: "в 2026 г." -> "в две тысячи двадцать шестом году"
     text = YEAR_RE.sub(_year, text)
     text = re.sub(r"\bг\.", "год", text)
+    # "за 21 мин" -> "за двадцать одну минуту" (accusative after за/через/на; only feminine 1 changes)
+    ACC = {"минута": "минуту", "секунда": "секунду", "копейка": "копейку"}
+    for unit_re, forms in UNITS.items():
+        if forms[0] not in ACC:
+            continue
+        text = re.sub(
+            r"(?<![\w])([Зз]а|[Чч]ерез|[Нн]а)\s+(\d*1)\s?" + unit_re + r"(?![а-яА-Я])",
+            lambda m, f=forms: (f"{m.group(1)} {_cardinal_gender(int(m.group(2)), True)} {ACC[f[0]]}"
+                                if int(m.group(2)) % 100 != 11 else m.group(0)),
+            text,
+        )
+    text = re.sub(r"\bодна (минуту|секунду|копейку)\b", r"одну \1", text)
     # number + unit with agreement
     for unit_re, forms in UNITS.items():
         text = re.sub(
@@ -197,6 +235,12 @@ def normalize_ru(text: str) -> str:
             lambda m, f=forms: f"{_cardinal_gender(int(m.group(1)), f[0] in FEMININE_UNITS)} {ru_plural(int(m.group(1)), f)}",
             text,
         )
+    # "на 5-м этаже" is prepositional (пятом), not instrumental (пятым)
+    text = re.sub(
+        r"(?<![\w])([Вв]о?|[Нн]а|[Оо]б?|[Пп]ри)\s+(\d+)\s?[-–]\s?м\b",
+        lambda m: f"{m.group(1)} {_decline_ordinal(_ordinal(int(m.group(2)), 'й'), 'prep')}",
+        text,
+    )
     # ordinals: 5-й, 5-я, 5-е, 5-го, 5-му, 5-м, 5-х (also with long dash/no dash variants)
     text = re.sub(
         r"(\d+)\s?[-–]\s?(ый|ий|ой|ая|ое|й|я|е|го|му|м|х)\b",
