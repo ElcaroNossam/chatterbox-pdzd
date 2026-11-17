@@ -4,3 +4,7 @@ __pycache__/
 *.wav
 *.mp3
 voices/
+*.log
+*.m4a
+*.flac
+*.pt
