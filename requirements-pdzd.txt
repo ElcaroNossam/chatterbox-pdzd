@@ -2,3 +2,4 @@
 setuptools<81        # perth watermarker imports pkg_resources
 ruaccent             # Russian stress (Apache-2.0), replaces GPL russian_text_stresser
 num2words            # numbers -> words for text_ru.normalize_ru
+faster-whisper==1.2.1   # optional: speech QA (tail cut, retakes)

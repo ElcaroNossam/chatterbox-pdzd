@@ -151,12 +151,31 @@ def _year(m: "re.Match") -> str:
     return f"{prep + ' ' if prep else ''}{ordinal} {YEAR_WORD[case]}"
 
 
+LINE_NO_RE = re.compile(r"^\s*\d{1,3}\s+(?=[^\d\s\-–])")
+
+
+def _numbered_sheet(lines) -> bool:
+    """A lyric sheet numbers its lines ("01 Вокзал..."): 3+ consecutive numbered lines.
+    A single line starting with a number ("15 минут мы шли", "5-й этаж") is normal text."""
+    run = 0
+    for line in lines:
+        if not line.strip() or re.match(r"^\s*\[", line):
+            continue
+        run = run + 1 if LINE_NO_RE.match(line) else 0
+        if run >= 3:
+            return True
+    return False
+
+
 def strip_markup(text: str) -> str:
+    raw = text.splitlines()
+    numbered = _numbered_sheet(raw)
     lines = []
-    for line in text.splitlines():
+    for line in raw:
         line = re.sub(r"^\s*\[[^\]]*\].*$", "", line)          # [Куплет 1] 16 тактов ...
         line = re.sub(r"\([^)]*\)", "", line)                    # (ровно), (тише)
-        line = re.sub(r"^\s*\d{1,3}\s+(?=\D)", "", line)        # leading line numbers "01 "
+        if numbered:
+            line = LINE_NO_RE.sub("", line)                        # leading line numbers "01 "
         line = line.replace("|", " ")
         line = line.strip()
         if line:
