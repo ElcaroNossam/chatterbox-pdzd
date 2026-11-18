@@ -1,6 +1,8 @@
 """Local voice job service for SoundRep (chatterbox-pdzd).
 
-Keeps the model in memory and renders jobs one at a time (the CPU cannot do two at once).
+Renders jobs one at a time (the CPU cannot do two at once). The model is loaded on the first
+job and unloaded after $PDZD_IDLE_SECONDS (default 900) without work, so it holds ~7 GB of RAM
+only while someone is actually using it.
 Listens on 127.0.0.1 only; every request must carry X-Worker-Token = $PDZD_WORKER_TOKEN, and
 every file path must lie inside $PDZD_ALLOWED_ROOT (the SoundRep data directory).
 
@@ -12,6 +14,8 @@ every file path must lie inside $PDZD_ALLOWED_ROOT (the SoundRep data directory)
   GET  /jobs/<id>                      → {status, position, done, total, seconds, error, scores}
 """
 import argparse
+import ctypes
+import gc
 import hmac
 import json
 import os
@@ -27,13 +31,14 @@ from chatterbox import pipeline as P
 TOKEN = os.environ.get("PDZD_WORKER_TOKEN", "")
 ROOT = os.path.realpath(os.environ.get("PDZD_ALLOWED_ROOT", "/nonexistent"))
 MAX_TEXT = 1200
+IDLE_SECONDS = int(os.environ.get("PDZD_IDLE_SECONDS", "900"))  # unload the model after this much idle time
 ID_RE = re.compile(r"^[0-9a-f-]{36}$")
 
 jobs: dict = {}  # id → state (in memory; a restart drops unfinished jobs and SoundRep reports them)
 order: list = []
 work: "queue.Queue[str]" = queue.Queue()
 lock = threading.Lock()
-state = {"ready": False, "running": None, "error": None}
+state = {"ready": True, "loaded": False, "loading": False, "running": None, "error": None}
 
 
 def inside_root(path: str) -> str:
@@ -49,21 +54,45 @@ def position(job_id: str) -> int:
     return waiting.index(job_id) + 1 if job_id in waiting else 0
 
 
-def worker():
+def free_memory():
+    """Give the model's RAM back to the OS (Python alone keeps freed blocks in its heap)."""
+    gc.collect()
     try:
-        model = P.load_model()
-        state["ready"] = True
-    except Exception as e:  # noqa: BLE001
-        state["error"] = f"model failed to load: {e}"
-        return
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass
+
+
+def worker():
+    """Model is loaded on the first job and unloaded after IDLE_SECONDS without work,
+    so the service costs ~0 RAM while nobody is using it."""
+    model = None
     while True:
-        job_id = work.get()
+        try:
+            job_id = work.get(timeout=IDLE_SECONDS if model is not None else None)
+        except queue.Empty:
+            # idle: unload the TTS model and Whisper, return the memory
+            model = None
+            from chatterbox import asr_qa
+            asr_qa._model = None
+            free_memory()
+            state["loaded"] = False
+            print(f"[serve] idle {IDLE_SECONDS}s — model unloaded", flush=True)
+            continue
         job = jobs.get(job_id)
         if not job:
             continue
         state["running"] = job_id
         job.update(status="running", started=time.time())
         try:
+            if model is None:
+                job["loading"] = True
+                state["loading"] = True
+                t = time.time()
+                model = P.load_model()
+                state.update(loaded=True, loading=False, error=None)
+                job["loading"] = False
+                print(f"[serve] model loaded in {time.time() - t:.0f}s", flush=True)
             s = P.Settings(**job["settings"])
             P.set_voice(model, job["voice"], s.emotion)
 
@@ -75,7 +104,8 @@ def worker():
             job.update(status="done", scores=res.scores)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
-            job.update(status="error", error=str(e)[:300])
+            state["loading"] = False
+            job.update(status="error", loading=False, error=str(e)[:300])
         finally:
             job["finished"] = time.time()
             state["running"] = None
@@ -112,14 +142,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         if self.path == "/health":
-            return self.reply(200, {"ready": state["ready"], "error": state["error"], "queue": work.qsize(),
-                                    "running": state["running"]})
+            return self.reply(200, {"ready": state["ready"], "loaded": state["loaded"], "loading": state["loading"],
+                                    "error": state["error"], "queue": work.qsize(), "running": state["running"]})
         m = re.match(r"^/jobs/([0-9a-f-]{36})$", self.path)
         if m:
             job = jobs.get(m.group(1))
             if not job:
                 return self.reply(404, {"error": "unknown job"})
-            return self.reply(200, {k: job.get(k) for k in ("status", "done", "total", "seconds", "error", "scores")}
+            return self.reply(200, {k: job.get(k) for k in ("status", "done", "total", "seconds", "error", "scores", "loading")}
                               | {"position": position(m.group(1))})
         self.reply(404, {"error": "not found"})
 
